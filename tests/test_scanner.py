@@ -115,7 +115,7 @@ class ScanTests(IndexerTestCase):
         rep, hasher = self.scan()
         self.assertEqual(hasher.calls, [])
 
-    def test_rename_keeps_resource_and_does_not_rehash(self):
+    def test_rename_is_hash_confirmed_keeps_resource_and_metadata(self):
         p = self.write("Samples/old/kick.wav", b"kick data")
         self.scan()
         self.conn.execute("UPDATE resource SET kind='one_shot', f0_hz=55.0 WHERE 1")
@@ -123,10 +123,11 @@ class ScanTests(IndexerTestCase):
         (self.root / "Samples/new").mkdir(parents=True)
         os.rename(p, self.root / "Samples/new/kick renamed.wav")  # mtime preserved by rename
         rep, hasher = self.scan()
-        self.assertEqual(hasher.calls, [])
-        self.assertEqual((rep.moved, rep.new_paths, rep.marked_missing, rep.hashed), (1, 0, 0, 0))
+        # A new/relocated path is ALWAYS hashed; the move is confirmed by SHA-256 identity.
+        self.assertEqual(len(hasher.calls), 1)
+        self.assertEqual((rep.moved, rep.new_paths, rep.marked_missing, rep.hashed), (1, 0, 0, 1))
         paths = self.paths()
-        # Definition: a detected move UPDATES the existing path row in place (same row id),
+        # Definition: a hash-confirmed move UPDATES the existing path row in place (same row id),
         # so no 'missing' ghost is left behind.
         self.assertEqual(list(paths), ["Samples/new/kick renamed.wav"])
         row = self.conn.execute("SELECT id, resource_id, missing FROM path").fetchone()
@@ -135,6 +136,30 @@ class ScanTests(IndexerTestCase):
         res = self.conn.execute("SELECT kind, f0_hz FROM resource").fetchone()
         self.assertEqual((res["kind"], res["f0_hz"]), ("one_shot", 55.0))
         self.assertEqual(self.count("resource"), 1)
+
+    def test_equal_size_mtime_different_content_on_new_path_does_not_inherit_metadata(self):
+        # Regression: the old hashless move heuristic matched (size, mtime) only, so a
+        # DIFFERENT file that happened to share both inherited the old resource's metadata.
+        a = self.write("old/a.wav", b"AAAA", mtime=1_700_000_000)
+        self.scan()
+        rid_a = self.paths()["old/a.wav"]["resource_id"]
+        self.conn.execute("UPDATE resource SET kind='one_shot', f0_hz=55.0, category='kick' WHERE id=?", (rid_a,))
+        a.unlink()
+        self.write("new/b.wav", b"BBBB", mtime=1_700_000_000)  # same size, same mtime, other bytes
+        rep, hasher = self.scan()
+        self.assertEqual(len(hasher.calls), 1)  # new path is always hashed
+        self.assertEqual((rep.moved, rep.new_paths, rep.marked_missing), (0, 1, 1))
+        paths = self.paths()
+        rid_b = paths["new/b.wav"]["resource_id"]
+        self.assertNotEqual(rid_a, rid_b)
+        self.assertEqual(paths["old/a.wav"]["resource_id"], rid_a)
+        self.assertEqual(paths["old/a.wav"]["missing"], 1)
+        sha_b = self.conn.execute("SELECT sha256 FROM resource WHERE id=?", (rid_b,)).fetchone()[0]
+        self.assertEqual(sha_b, hashlib.sha256(b"BBBB").hexdigest())
+        res = self.conn.execute("SELECT kind, category, f0_hz FROM resource WHERE id=?", (rid_b,)).fetchone()
+        self.assertEqual(tuple(res), (None, None, None))  # nothing inherited
+        kept = self.conn.execute("SELECT kind, f0_hz FROM resource WHERE id=?", (rid_a,)).fetchone()
+        self.assertEqual(tuple(kept), ("one_shot", 55.0))
 
     def test_move_with_touched_mtime_falls_back_to_hash(self):
         p = self.write("a/x.wav", b"same bytes")
@@ -339,7 +364,7 @@ class SchemaTests(IndexerTestCase):
     def test_schema_has_future_analysis_columns_and_stage_table(self):
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(resource)")}
         expected = {
-            "kind", "category", "confidence", "duration_s", "sr", "bits", "channels", "valid",
+            "kind", "category", "duration_s", "sr", "bits", "channels", "valid",
             "valid_error", "bpm_name", "bpm_est", "beats", "key_name", "key_est", "f0_hz",
             "sub_peak_hz", "centroid", "rolloff", "flatness", "band_sub", "band_low", "band_mid",
             "band_high", "lufs", "true_peak", "crest", "dc_offset", "clipping", "stereo_corr_low",
@@ -348,7 +373,7 @@ class SchemaTests(IndexerTestCase):
         }
         self.assertFalse(expected - cols, expected - cols)
         stage_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(resource_stage)")}
-        self.assertEqual(stage_cols, {"resource_id", "stage", "version", "done_at", "error"})
+        self.assertEqual(stage_cols, {"resource_id", "stage", "version", "done_at", "error", "input_sig"})
         with self.assertRaises(Exception):
             self.conn.execute(
                 "INSERT INTO resource(sha256,size,ext,first_seen,kind) VALUES (?,?,?,?,?)",
@@ -357,7 +382,7 @@ class SchemaTests(IndexerTestCase):
 
     def test_migrate_is_idempotent(self):
         self.assertEqual(db.migrate(self.conn), [])
-        self.assertEqual(db.schema_version(self.conn), 1)
+        self.assertEqual(db.schema_version(self.conn), db.LATEST_VERSION)
 
     def test_open_without_init_fails(self):
         with self.assertRaises(db.DatabaseNotFound):

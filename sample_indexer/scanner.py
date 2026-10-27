@@ -12,11 +12,16 @@ Algorithm (see also AGENTS.md / README):
      * same (rel_path, size, mtime_ns), flagged missing -> restored: flag cleared, no hash.
      * rel_path known but size/mtime differ -> changed: re-hash.
      * rel_path unknown -> new.
-3. Rename heuristic (full scans only): stored paths that were not discovered are "vanished".
-   A new file whose (size, mtime_ns) equals that of a vanished path whose candidates all
-   belong to ONE resource is treated as a move: the existing path row is updated in place
-   (rel_path/top_folder/ext/last_seen, missing cleared). No hash, resource row and
-   metadata untouched. Ambiguous or unmatched new files are hashed.
+3. Rename detection (full scans only): stored paths that were not discovered are "vanished".
+   (size, mtime_ns) is only used to pick move CANDIDATES (equal size+mtime does NOT imply
+   equal content). EVERY new/relocated path is hashed; when the SHA-256 resolves to the
+   resource of an unambiguous vanished candidate, the move is confirmed and the existing
+   path row is updated in place (rel_path/top_folder/ext/last_seen, missing cleared). Any
+   other content gets/reuses its own resource by SHA-256, so metadata is never inherited
+   from a different file. Ambiguous candidate groups (several resources share size+mtime)
+   are never treated as moves.
+   Documented limitation: an UNCHANGED path (same rel_path, size, mtime_ns) is not
+   re-hashed, so a same-size/same-mtime in-place content edit goes undetected.
 4. New and changed files are hashed with a bounded thread pool (SHA-256, streamed). The
    main thread alone writes to SQLite, committing every `batch_size` results. A
    changed file points its path row at the (possibly new) resource; the old resource row
@@ -292,28 +297,21 @@ class Scanner:
         vanished = (
             [r for rel, r in db_rows.items() if rel not in discovered] if not rep.partial else []
         )
-        moves: list[tuple[FileInfo, sqlite3.Row]] = []
-        consumed: set[int] = set()
+        # (size, mtime_ns) is only a CANDIDATE filter: equal size+mtime does not imply equal
+        # content, so every new path is hashed and a move is accepted only when the SHA-256
+        # resolves to the candidate's own resource (see _store).
+        self._move_candidates = defaultdict(list)
+        self._consumed: set[int] = set()
         if self.rename_heuristic and vanished and new_files:
             groups: dict[tuple[int, int], list[sqlite3.Row]] = defaultdict(list)
             for r in vanished:
                 groups[(r["size"], r["mtime_ns"])].append(r)
-            ambiguous = {k for k, g in groups.items() if len({r["resource_id"] for r in g}) > 1}
-            still_new: list[FileInfo] = []
-            for info in new_files:
-                key = (info.size, info.mtime_ns)
-                group = groups.get(key)
-                if group and key not in ambiguous:
-                    src = group.pop()
-                    consumed.add(src["id"])
-                    moves.append((info, src))
-                else:
-                    still_new.append(info)
-            new_files = still_new
+            for key, group in groups.items():
+                if len({r["resource_id"] for r in group}) == 1:  # ambiguous groups: no move
+                    self._move_candidates[key] = group
 
         rep.unchanged = len(refresh_ids)
         rep.restored = len(restored)
-        rep.moved = len(moves)
         rep.new_paths = len(new_files)
         rep.changed = len(changed)
 
@@ -328,14 +326,6 @@ class Scanner:
                     (self._now, row["id"]),
                 )
                 self._wrote()
-            for info, src in moves:
-                self.conn.execute(
-                    "UPDATE path SET rel_path=?, top_folder=?, ext=?, size=?, mtime_ns=?,"
-                    " last_seen=?, missing=0, missing_since=NULL WHERE id=?",
-                    (info.rel_path, info.top_folder, info.ext, info.size, info.mtime_ns,
-                     self._now, src["id"]),
-                )
-                self._wrote()
             self._commit()
 
             jobs: list[tuple[FileInfo, sqlite3.Row | None]] = [(i, None) for i in new_files]
@@ -344,7 +334,7 @@ class Scanner:
             self._hash_and_store(jobs)
 
             if not rep.partial:
-                self._mark_missing([r for r in vanished if r["id"] not in consumed])
+                self._mark_missing([r for r in vanished if r["id"] not in self._consumed])
         finally:
             self._commit()
 
@@ -403,6 +393,26 @@ class Scanner:
             "SELECT id FROM resource WHERE sha256=?", (sha,)
         ).fetchone()["id"]
         if old_row is None:
+            candidates = self._move_candidates.get((info.size, info.mtime_ns), [])
+            src = next(
+                (c for c in candidates
+                 if c["resource_id"] == resource_id and c["id"] not in self._consumed),
+                None,
+            )
+            if src is not None:
+                # Hash-confirmed move: same content, same size/mtime, path vanished -> update
+                # the existing path row in place (no 'missing' ghost; resource untouched).
+                self._consumed.add(src["id"])
+                self.report.moved += 1
+                self.report.new_paths -= 1
+                self.conn.execute(
+                    "UPDATE path SET rel_path=?, top_folder=?, ext=?, size=?, mtime_ns=?,"
+                    " last_seen=?, missing=0, missing_since=NULL WHERE id=?",
+                    (info.rel_path, info.top_folder, info.ext, info.size, info.mtime_ns,
+                     self._now, src["id"]),
+                )
+                self._wrote()
+                return
             self.conn.execute(
                 "INSERT INTO path(resource_id, root, rel_path, top_folder, ext, size, mtime_ns,"
                 " first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",

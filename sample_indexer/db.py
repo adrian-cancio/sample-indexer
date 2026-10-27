@@ -96,11 +96,31 @@ def migrate(conn: sqlite3.Connection) -> list[int]:
     return applied
 
 
+def backup_db(conn: sqlite3.Connection, dest: str | Path) -> Path:
+    """Consistent online copy via the SQLite backup API (safe while WAL is active)."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        raise FileExistsError(f"backup target already exists: {dest}")
+    target = sqlite3.connect(dest)
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    return dest
+
+
 def open_db(path: str | Path, *, create: bool = False) -> sqlite3.Connection:
     """Connect; with create=True also create and migrate. Otherwise require an existing,
-    up-to-date database."""
+    up-to-date database. An existing populated database that is about to be migrated is first
+    copied to `<db>.bak-v<old>-<UTC stamp>` with the SQLite backup API."""
+    existed = Path(path).exists()
     conn = connect(path, create=create)
     if create:
+        current = schema_version(conn)
+        if existed and 0 < current < LATEST_VERSION:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_db(conn, f"{path}.bak-v{current}-{stamp}")
         migrate(conn)
     else:
         version = schema_version(conn)
