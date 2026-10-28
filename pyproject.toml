@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sample-indexer"
+version = "0.1.0"
+description = "SQLite index of a sample and MIDI library with incremental reconciliation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+]
+authors = [
+    { name = "Adrián Cancio" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+
+[project.scripts]
+sample-indexer = "sample_indexer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sample_indexer*"]

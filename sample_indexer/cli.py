@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stats", help="counts by ext/folder, missing, duplicates")
 
     p_meta = sub.add_parser(
-        "metadata", help="L3-3: ffprobe header metadata + provisional path/name labels (resumable)"
+        "metadata", help="ffprobe header metadata + provisional path/name labels (resumable)"
     )
     p_meta.add_argument("--limit", type=int, default=None, help="process at most N resources this run")
     p_meta.add_argument("--workers", type=int, default=DEFAULT_META_WORKERS, help=f"concurrent ffprobe processes (default {DEFAULT_META_WORKERS})")
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_meta.add_argument("--seed", type=int, default=0, help="stratified-selection seed (default 0)")
 
     p_low = sub.add_parser(
-        "lowend", help="L3-4: full ffmpeg decode + low-end DSP for kick/rumble/bass candidates (resumable)"
+        "lowend", help="full ffmpeg decode + low-end DSP for kick/rumble/bass candidates (resumable)"
     )
     p_low.add_argument("--limit", type=int, default=None, help="process at most N resources this run")
     p_low.add_argument("--workers", type=int, default=DEFAULT_LOWEND_WORKERS, help=f"concurrent ffmpeg processes (default {DEFAULT_LOWEND_WORKERS})")
@@ -68,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_low.add_argument("--seed", type=int, default=0, help="stratified-selection seed (default 0)")
 
     p_loop = sub.add_parser(
-        "loops", help="L3-5: full ffmpeg decode + tempo/beats/bars/key DSP for loop candidates (resumable)"
+        "loops", help="full ffmpeg decode + tempo/beats/bars/key DSP for loop candidates (resumable)"
     )
     p_loop.add_argument("--limit", type=int, default=None, help="process at most N resources this run")
     p_loop.add_argument("--workers", type=int, default=loops_stage.DEFAULT_LOOPS_WORKERS, help=f"concurrent ffmpeg+DSP workers (default {loops_stage.DEFAULT_LOOPS_WORKERS})")
@@ -86,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_loop.add_argument("--stratify", action="store_true", help="select round-robin across folder x bpm_name strata instead of by id (pilots)")
     p_loop.add_argument("--seed", type=int, default=0, help="stratified-selection seed (default 0)")
 
-    p_audio = sub.add_parser("audio", help="L3-6: streaming full-decode timbre and loudness (resumable)")
+    p_audio = sub.add_parser("audio", help="streaming full-decode timbre and loudness (resumable)")
     p_audio.add_argument("--limit", type=int, default=None)
     p_audio.add_argument("--workers", type=int, default=2)
     p_audio.add_argument("--timeout", type=float, default=60.0)
@@ -97,14 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_audio.add_argument("--stratify", action="store_true")
     p_audio.add_argument("--seed", type=int, default=0)
 
-    p_midi = sub.add_parser("midi", help="L3-7: bounded stdlib MIDI event parsing (resumable)")
+    p_midi = sub.add_parser("midi", help="bounded stdlib MIDI event parsing (resumable)")
     p_midi.add_argument("--limit", type=int, default=None)
     p_midi.add_argument("--force", action="store_true")
     p_midi.add_argument("--retry-errors", action="store_true")
     p_midi.add_argument("--stratify", action="store_true")
     p_midi.add_argument("--seed", type=int, default=0)
-    sub.add_parser("midi-coverage", help="L3-7 MIDI coverage and statuses")
-    sub.add_parser("coverage", help="L3-3 stage coverage and metadata distributions")
+    sub.add_parser("midi-coverage", help="MIDI coverage and statuses")
+    sub.add_parser("coverage", help="stage coverage and metadata distributions")
 
     p_bak = sub.add_parser("backup", help="consistent SQLite backup of the database")
     p_bak.add_argument("dest", type=Path, help="backup file to create (must not exist)")

@@ -1,9 +1,13 @@
 """Tests for L3-9 extended technical queries: numeric bounds, nulls, provenance, errors, hostile SQL."""
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from sample_indexer import db, reports
+import sample_indexer
+from sample_indexer import cli, db, reports
 
 
 class QueryTechnicalTests(unittest.TestCase):
@@ -117,6 +121,25 @@ class QueryTechnicalTests(unittest.TestCase):
         # Ensure resource table still exists and has rows
         count = self.conn.execute("SELECT COUNT(*) FROM resource").fetchone()[0]
         self.assertEqual(count, 4)
+
+    def test_query_json_cli(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = cli.main(["--db", str(self.db_path), "query", "--json", "--limit", "10"])
+        self.assertEqual(ret, 0)
+        parsed = json.loads(buf.getvalue())
+        self.assertIsInstance(parsed, list)
+        self.assertEqual(len(parsed), 3)  # row 4 is corrupt/error and excluded by default
+        paths = [item["rel_path"] for item in parsed]
+        self.assertIn("Samples/Kicks/Kick1.wav", paths)
+
+    def test_package_exports(self):
+        self.assertEqual(sample_indexer.__version__, "0.1.0")
+        self.assertIs(sample_indexer.query, reports.query)
+        # Verify query can be called via package export
+        results = sample_indexer.query(self.conn, ext="wav")
+        self.assertEqual(len(results), 2)
+
 
 
 if __name__ == "__main__":

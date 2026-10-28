@@ -5,3 +5,8 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 reports/
+
+# Python packaging build artifacts
+build/
+dist/
+*.egg-info/
